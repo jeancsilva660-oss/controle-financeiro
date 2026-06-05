@@ -173,9 +173,13 @@
                     id: 't_' + Date.now(),
                     ...tx,
                     valor: finalVal,
-                    data: tx.data || new Date().toISOString().split('T')[0]
+                    data: tx.data || new Date().toISOString().split('T')[0],
+                    parcelamento_id: tx.parcelamento_id || "",
+                    parcela_atual: tx.parcela_atual || "",
+                    total_parcelas: tx.total_parcelas || ""
                 };
 
+                // Atualiza localmente imediato para dar feedback visual rápido
                 setLancamentos(prev => [localTx, ...prev]);
                 setIsManualOpen(false);
                 setIsAiOpen(false);
@@ -185,8 +189,8 @@
                     setIsSyncing(true);
                     try {
                         const payload = {
-                            action: 'addLancamento',
-                            data: JSON.stringify(localTx)
+                            action: 'saveTransaction',
+                            transactions: [localTx]
                         };
                         
                         await fetch(sheetsUrl, {
@@ -199,6 +203,7 @@
                         });
 
                         showToast('Lançamento guardado na folha de cálculo!', 'success');
+                        // Aguarda um pequeno delay para o Sheets processar antes de recarregar
                         setTimeout(() => syncWithSheets(), 1500);
                     } catch (error) {
                         console.error('Erro de rede ao enviar lançamento:', error);
@@ -225,8 +230,8 @@
                 if (sheetsUrl) {
                     try {
                         const payload = {
-                            action: 'deleteLancamento',
-                            data: JSON.stringify({ id: tx.id })
+                            action: 'deleteTransaction',
+                            id: tx.id
                         };
                         await fetch(sheetsUrl, {
                             method: 'POST',
@@ -247,7 +252,7 @@
 
                 if (sheetsUrl) {
                     try {
-                        const payload = { action: 'clearLixeira' };
+                        const payload = { action: 'emptyTrash' };
                         await fetch(sheetsUrl, {
                             method: 'POST',
                             mode: 'no-cors',
