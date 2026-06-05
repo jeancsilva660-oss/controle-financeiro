@@ -140,7 +140,29 @@
                             saldo_inicial: parseBrazilianNumber(c.saldo_inicial)
                         }));
 
-                        setLancamentos(res.data.lancamentos || []);
+                        const serverTxs = res.data.lancamentos || [];
+                        
+                        // Mesclagem robusta (Optimistic UI):
+                        // Mantemos todos os lançamentos vindos do servidor, mais qualquer um local que esteja
+                        // marcado como 'pending' e que ainda não conste no retorno do servidor.
+                        setLancamentos(prev => {
+                            const pendingLocal = prev.filter(l => l.sync_status === 'pending');
+                            const combined = [...serverTxs];
+                            
+                            pendingLocal.forEach(localItem => {
+                                const alreadyInServer = serverTxs.some(s => 
+                                    s.id === localItem.id || 
+                                    (s.descricao === localItem.descricao && 
+                                     Math.abs(parseBrazilianNumber(s.valor)) === Math.abs(parseBrazilianNumber(localItem.valor)) && 
+                                     s.data === localItem.data)
+                                );
+                                if (!alreadyInServer) {
+                                    combined.unshift(localItem);
+                                }
+                            });
+                            return combined;
+                        });
+
                         setCartoes(sanitizedCartoes);
                         setCategorias(res.data.config || []);
                         setStatusConexao('conectado');
@@ -176,10 +198,11 @@
                     data: tx.data || new Date().toISOString().split('T')[0],
                     parcelamento_id: tx.parcelamento_id || "",
                     parcela_atual: tx.parcela_atual || "",
-                    total_parcelas: tx.total_parcelas || ""
+                    total_parcelas: tx.total_parcelas || "",
+                    sync_status: 'pending' // Mantém o item ativo na tela localmente como pendente
                 };
 
-                // Atualiza localmente imediato para dar feedback visual rápido
+                // Atualiza localmente imediato para dar feedback visual instantâneo
                 setLancamentos(prev => [localTx, ...prev]);
                 setIsManualOpen(false);
                 setIsAiOpen(false);
@@ -193,7 +216,13 @@
                             transactions: [localTx]
                         };
                         
-                        await fetch(sheetsUrl, {
+                        // Ponte de dados dupla (Query String + Body POST) para garantir recepção em qualquer formato de script
+                        const urlWithParams = new URL(sheetsUrl);
+                        urlWithParams.searchParams.set('action', 'saveTransaction');
+                        urlWithParams.searchParams.set('data', JSON.stringify(localTx));
+                        urlWithParams.searchParams.set('transactions', JSON.stringify([localTx]));
+                        
+                        await fetch(urlWithParams.toString(), {
                             method: 'POST',
                             mode: 'no-cors',
                             headers: {
@@ -202,9 +231,10 @@
                             body: JSON.stringify(payload)
                         });
 
-                        showToast('Lançamento guardado na folha de cálculo!', 'success');
-                        // Aguarda um pequeno delay para o Sheets processar antes de recarregar
-                        setTimeout(() => syncWithSheets(), 1500);
+                        showToast('Lançamento enviado para gravação!', 'success');
+                        
+                        // Sincronização estendida para dar tempo de o Sheets persistir a linha
+                        setTimeout(() => syncWithSheets(), 3000);
                     } catch (error) {
                         console.error('Erro de rede ao enviar lançamento:', error);
                         showToast('Guardado localmente. Verifique a sua ligação à Internet.', 'error');
@@ -233,13 +263,18 @@
                             action: 'deleteTransaction',
                             id: tx.id
                         };
-                        await fetch(sheetsUrl, {
+                        
+                        const urlWithParams = new URL(sheetsUrl);
+                        urlWithParams.searchParams.set('action', 'deleteTransaction');
+                        urlWithParams.searchParams.set('id', tx.id);
+                        
+                        await fetch(urlWithParams.toString(), {
                             method: 'POST',
                             mode: 'no-cors',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(payload)
                         });
-                        setTimeout(() => syncWithSheets(), 1500);
+                        setTimeout(() => syncWithSheets(), 3000);
                     } catch (err) {
                         console.error(err);
                     }
@@ -253,7 +288,11 @@
                 if (sheetsUrl) {
                     try {
                         const payload = { action: 'emptyTrash' };
-                        await fetch(sheetsUrl, {
+                        
+                        const urlWithParams = new URL(sheetsUrl);
+                        urlWithParams.searchParams.set('action', 'emptyTrash');
+                        
+                        await fetch(urlWithParams.toString(), {
                             method: 'POST',
                             mode: 'no-cors',
                             headers: { 'Content-Type': 'application/json' },
@@ -364,7 +403,6 @@
                         </div>
                     )}
 
-                    {}
                     {/* Sidebar Clássica de Navegação - Desktop */}
                     <aside className="hidden md:flex w-64 bg-white border-r border-[#E2E8F0] flex-col p-6 shrink-0 justify-between">
                         <div className="space-y-8">
@@ -456,7 +494,6 @@
                             </div>
                         </div>
 
-                        {}
                         {/* TABPAINEL: Dashboard */}
                         {activeTab === 'dashboard' && (
                             <div className="space-y-6 animate-in fade-in duration-300">
@@ -541,7 +578,12 @@
                                                 {filteredLancamentos.slice(0, 4).map(l => (
                                                     <div key={l.id} className="py-2.5 flex justify-between items-center text-xs">
                                                         <div>
-                                                            <p className="font-bold text-slate-800">{l.descricao}</p>
+                                                            <p className="font-bold text-slate-800 flex items-center gap-1.5">
+                                                                {l.descricao}
+                                                                {l.sync_status === 'pending' && (
+                                                                    <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-ping" title="Sincronizando..."></span>
+                                                                )}
+                                                            </p>
                                                             <p className="text-[10px] text-slate-400 font-medium">{l.banco_conta} • {l.categoria}</p>
                                                         </div>
                                                         <p className={`font-bold whitespace-nowrap ${parseBrazilianNumber(l.valor) > 0 ? 'text-[#10B981]' : 'text-slate-700'}`}>
@@ -587,7 +629,17 @@
                                             {filteredLancamentos.map(l => (
                                                 <tr key={l.id} className="hover:bg-slate-50/60 transition-colors">
                                                     <td className="px-6 py-3.5 text-slate-500 font-medium whitespace-nowrap">{new Date(l.data).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</td>
-                                                    <td className="px-6 py-3.5 font-bold text-slate-800">{l.descricao}</td>
+                                                    <td className="px-6 py-3.5 font-bold text-slate-800">
+                                                        <div className="flex items-center gap-2">
+                                                            {l.descricao}
+                                                            {l.sync_status === 'pending' && (
+                                                                <span className="inline-flex items-center gap-1 text-[9px] bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded-md font-medium animate-pulse">
+                                                                    <svg className="w-2.5 h-2.5 animate-spin text-amber-600" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/></svg>
+                                                                    Gravando...
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    </td>
                                                     <td className="px-6 py-3.5 text-slate-500 font-medium">{l.categoria}</td>
                                                     <td className="px-6 py-3.5 font-semibold text-slate-600">{l.banco_conta} <span className="text-[9px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-400 uppercase">{l.metodo}</span></td>
                                                     <td className={`px-6 py-3.5 font-bold whitespace-nowrap ${parseBrazilianNumber(l.valor) > 0 ? 'text-[#10B981]' : 'text-slate-800'}`}>
@@ -693,7 +745,6 @@
 
                     </main>
 
-                    {}
                     {/* Botão Flutuante (FAB) da IA */}
                     <div className="fixed bottom-6 right-6 flex flex-col gap-3 z-40">
                         <button onClick={() => setIsAiOpen(true)} className="w-12 h-12 bg-slate-950 text-[#34D399] rounded-full flex items-center justify-center shadow-lg hover:scale-105 active:scale-95 transition-transform cursor-pointer">
